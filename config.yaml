@@ -1,0 +1,10 @@
+training:
+  epochs_phase1: 10
+  innovation_epochs: 5
+  batch_size: 64
+  learning_rate: 0.001
+  lambda_dissonance: 0.5
+
+paths:
+  model_save_path: "./models"
+  data_root: "./data/CIFAR-10-C"
