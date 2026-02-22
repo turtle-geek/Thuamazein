@@ -1,20 +1,24 @@
 import torch
+import torch.nn as nn
 import yaml
 import os
 import importlib
+import gc
 
 from models.ensemble_manager import EnsembleManager
-from models.architectures import SimpleCNN
+from models.architectures import SimpleCNN  # Standardized to ResNet-18
 from logic.judge import SimilarityAudit
 from data.data_processing import get_clean_loaders
 
-# Using importlib to handle scripts starting with numbers
+# Custom sharpening logic
+import sharpen_ensemble 
+
+# Logic for the specific training phases
 train_initial = importlib.import_module("scripts.01_train_initial")
 innovation_loop = importlib.import_module("scripts.02_innovation_loop")
 test_robustness = importlib.import_module("scripts.03_test_robustness")
 
 def load_config():
-    """Loads hyperparameters and paths from the config file."""
     with open("config.yaml", "r") as f:
         return yaml.safe_load(f)
 
@@ -23,48 +27,72 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_dir = config['paths']['model_save_path']
     
-    # PHASE 1: Initialization / Smart Check
-    # Skip training if agents already exist to save time.
+    # Epoch settings pulled from Config with hard-coded fallbacks
+    PHASE1_EPOCHS = config['training'].get('epochs_phase1', 15)
+    PHASE3_EPOCHS = config['training'].get('innovation_epochs', 20)
+    SHARPEN_EPOCHS = config['training'].get('sharpen_epochs', 25)
+
+    print(f"--- THAUMAZEIN SYSTEM ONLINE [Device: {device}] ---")
+
+    # PHASE 1: Build the base agents if they don't exist
     if not os.path.exists(os.path.join(model_dir, "agent_2.pth")):
-        print("PHASE 1: No existing agents found. Training initial agents...")
-        train_initial.run_training(epochs=config['training']['epochs_phase1']) 
+        print(f"Starting Phase 1: Training initial SSL agents ({PHASE1_EPOCHS} epochs)")
+        train_initial.run_training(epochs=PHASE1_EPOCHS) 
     else:
-        print("PHASE 1: Existing agents detected. Skipping to Audit phase.")
+        print("Phase 1: Existing foundation found, skipping pre-training.")
     
-    # Assembly: Load trained agents into the Ensemble Manager
+    # Load the agents (Rotation-trained 4-class heads)
     agents = []
     for i in range(3):
-        model = SimpleCNN().to(device)
+        model = SimpleCNN(num_classes=4).to(device)
         path = os.path.join(model_dir, f"agent_{i}.pth")
         model.load_state_dict(torch.load(path, map_location=device))
         agents.append(model)
     
     ensemble = EnsembleManager(agents).to(device)
     
-    # PHASE 2: Representational Audit
-    # The Judge identifies logical mimicry via RSA.
-    print("PHASE 2: Running Similarity Audit to detect redundancy...")
+    # PHASE 2: Similarity Audit
+    print("Phase 2: Running Representational Similarity Audit (RSA)...")
     _, val_loader = get_clean_loaders(batch_size=config['training']['batch_size'])
     accuracies, feature_maps = ensemble.get_stats(val_loader, device)
     
     auditor = SimilarityAudit()
     sim_matrix = auditor.evaluate_diversity(feature_maps)
     cut_idx = auditor.the_cut(accuracies, sim_matrix)
-    print(f"Result: Agent {cut_idx} identified as redundant and slated for innovation.")
+    print(f"Audit Result: Agent {cut_idx} is redundant. Initiating Dissonance Loop.")
     
-    # PHASE 3: Adversarial Innovation Loop
-    # Trains a Successor with a Dissonance Penalty to create unique logic.
-    print("PHASE 3: Training diverse Successor with Dissonance Penalty...")
+    # PHASE 3: Diversity Training
+    # VRAM Cleanup before the heavy ResNet Dissonance training
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    print(f"Phase 3: Training Successor with Lambda={config['training'].get('lambda_dissonance', 0.8)}")
     innovation_loop.run_successor_training(
         ensemble, 
         cut_idx, 
-        lmbda=config['training']['lambda_dissonance']
+        lmbda=config['training'].get('lambda_dissonance', 0.8),
+        epochs=PHASE3_EPOCHS 
     ) 
+
+    # Standardization: Map all diversity-trained heads to CIFAR-10 classes (10)
+    print("Standardizing architectures for CIFAR-10 task mapping...")
+    for agent in ensemble.agents:
+        if hasattr(agent, 'fc_final'): # ResNet Path
+            if agent.fc_final.out_features != 10:
+                agent.fc_final = nn.Linear(agent.feature_dim, 10).to(device)
+        elif hasattr(agent, 'fc2'): # SimpleCNN Legacy Path
+            if agent.fc2.out_features != 10:
+                agent.fc2 = nn.Linear(512, 10).to(device)
     
-    # PHASE 4: Robustness Stress Test
-    # Final benchmark against environmental noise in CIFAR-10-C.
-    print("PHASE 4: Evaluating ensemble robustness against corruptions...")
+    # PHASE 3.5: High-Fidelity Sharpening (Alignment)
+    print(f"Phase 3.5: Running High-Fidelity Sharpening ({SHARPEN_EPOCHS} epochs)")
+    sharpen_ensemble.sharpen(ensemble, SHARPEN_EPOCHS, device)
+
+    # PHASE 4: Final Stress Test & Logging
+    print("Phase 4: Evaluating Robustness on Environmental Corruptions...")
     test_robustness.run_stress_test(ensemble, device)
+    
+    print("\n[SYSTEM NOTIFICATION]: Evolution Complete. Please run generate_proof.py for final metrics.")
 
 if __name__ == "__main__":
     main()
