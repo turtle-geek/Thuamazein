@@ -1,58 +1,67 @@
 import torch
 import torch.nn as nn
+import json
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from data.data_processing import get_clean_loaders
 
 def sharpen(ensemble, epochs, device):
-    """
-    Advanced High-Fidelity Sharpening.
-    Uses Label Smoothing and a tuned LR to push for 85%+ Accuracy.
-    """
-    # Use 128 batch size for stable gradient updates on ResNet
-    train_loader, _ = get_clean_loaders(batch_size=128)
-    
+    train_loader, test_loader = get_clean_loaders(batch_size=128)
     agents = ensemble.agents
-    print(f"--- Precision Alignment Phase: {epochs} Epochs ---")
     
-    # Optimizer: AdamW with slightly higher weight decay to stabilize the ResNet weights
-    # We lower the LR slightly (5e-4) to ensure we don't overshoot the peak
-    optimizer = torch.optim.AdamW([{'params': a.parameters()} for a in agents], 
-                                  lr=5e-4, weight_decay=1e-3)
-    
-    # Scheduler: Anneals the LR to almost zero by the end
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-    
-    # THE SECRET SAUCE: Label Smoothing
-    # This prevents 'over-confidence' and helps diverse agents align on the task
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # High-Performance Settings: SGD + No Smoothing
+    optimizer = torch.optim.SGD([{'params': a.parameters()} for a in agents], 
+                                lr=0.01, momentum=0.9, weight_decay=5e-4)
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
+    criterion = nn.CrossEntropyLoss()
 
+    # Diagnostic History
+    history = {'train_loss': [], 'test_acc': [], 'lr': []}
+
+    print(f"--- High-Precision Training: {epochs} Epochs ---")
     for epoch in range(epochs):
         ensemble.train()
         running_loss = 0.0
         
-        for batch_idx, (images, labels) in enumerate(train_loader):
+        for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             
-            # Summed loss across the diverse team
             total_loss = 0
             for agent in agents:
-                outputs, _ = agent(images)
-                total_loss += criterion(outputs, labels)
+                out, _ = agent(images)
+                total_loss += criterion(out, labels)
             
             total_loss.backward()
             optimizer.step()
             running_loss += total_loss.item()
-            
-        scheduler.step()
-        avg_loss = running_loss / len(train_loader)
         
-        # Track the 'landing' of the learning rate
+        # Validation Pass (For Graphing)
+        ensemble.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs, _ = ensemble(images)
+                _, predicted = outputs.max(1)
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
+        
+        acc = 100. * correct / total
+        avg_loss = running_loss / len(train_loader)
         current_lr = scheduler.get_last_lr()[0]
-        print(f"  Epoch [{epoch+1}/{epochs}] | Team Loss: {avg_loss:.4f} | LR: {current_lr:.6f}")
+        
+        # Log metrics
+        history['train_loss'].append(avg_loss)
+        history['test_acc'].append(acc)
+        history['lr'].append(current_lr)
+        
+        print(f"  Epoch [{epoch+1}/{epochs}] | Loss: {avg_loss:.4f} | Acc: {acc:.2f}%")
+        scheduler.step()
 
-    # Final Save: Overwrites the older weights with the 'sharpened' high-accuracy versions
+    # Save Log to File
+    with open('training_log.json', 'w') as f:
+        json.dump(history, f)
+
     for i, agent in enumerate(agents):
         torch.save(agent.state_dict(), f"models/agent_{i}.pth")
-    
-    print("Sharpening Complete. High-accuracy models saved.")

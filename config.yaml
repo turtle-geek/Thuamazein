@@ -1,7 +1,7 @@
 training:
-  epochs_phase1: 15
-  innovation_epochs: 20
-  sharpen_epochs: 25
+  epochs_phase1: 20
+  innovation_epochs: 25
+  sharpen_epochs: 40
   batch_size: 128
   learning_rate: 0.001
   lambda_dissonance: 0.8
