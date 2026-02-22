@@ -41,12 +41,28 @@ def main():
     else:
         print("Phase 1: Existing foundation found, skipping pre-training.")
     
-    # Load the agents (Rotation-trained 4-class heads)
+    # PHASE 1.5: Smart Loading (Fixes size mismatch errors)
     agents = []
     for i in range(3):
-        model = SimpleCNN(num_classes=4).to(device)
         path = os.path.join(model_dir, f"agent_{i}.pth")
-        model.load_state_dict(torch.load(path, map_location=device))
+        
+        # Load raw state dict to check output layer size
+        checkpoint = torch.load(path, map_location=device)
+        
+        # Determine if this is a 4-class (Rotation) or 10-class (CIFAR) model
+        # Check both potential layer names for ResNet and SimpleCNN
+        if "fc_final.bias" in checkpoint:
+            out_features = checkpoint["fc_final.bias"].shape[0]
+        elif "fc2.bias" in checkpoint:
+            out_features = checkpoint["fc2.bias"].shape[0]
+        else:
+            out_features = 4  # Fallback to default
+            
+        print(f"Loading Agent {i}: Detected {out_features} output classes.")
+        
+        # Initialize model with the DETECTED number of classes to avoid RuntimeError
+        model = SimpleCNN(num_classes=out_features).to(device)
+        model.load_state_dict(checkpoint)
         agents.append(model)
     
     ensemble = EnsembleManager(agents).to(device)
@@ -77,10 +93,12 @@ def main():
     # Standardization: Map all diversity-trained heads to CIFAR-10 classes (10)
     print("Standardizing architectures for CIFAR-10 task mapping...")
     for agent in ensemble.agents:
-        if hasattr(agent, 'fc_final'): # ResNet Path
+        # Check ResNet-18 structure
+        if hasattr(agent, 'fc_final'): 
             if agent.fc_final.out_features != 10:
                 agent.fc_final = nn.Linear(agent.feature_dim, 10).to(device)
-        elif hasattr(agent, 'fc2'): # SimpleCNN Legacy Path
+        # Check Legacy SimpleCNN structure
+        elif hasattr(agent, 'fc2'): 
             if agent.fc2.out_features != 10:
                 agent.fc2 = nn.Linear(512, 10).to(device)
     
